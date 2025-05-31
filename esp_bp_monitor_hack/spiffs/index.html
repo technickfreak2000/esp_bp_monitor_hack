@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ESP32 WebSocket Echo Client</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 600px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      line-height: 1.5;
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 1rem;
+    }
+    #log {
+      border: 1px solid #ccc;
+      height: 300px;
+      overflow-y: auto;
+      padding: 0.5rem;
+      background: #f9f9f9;
+      margin-bottom: 1rem;
+      white-space: pre-wrap;
+      font-family: Consolas, monospace;
+      font-size: 0.9rem;
+    }
+    #inputRow {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    #msgInput {
+      flex: 1;
+      padding: 0.5rem;
+      font-size: 1rem;
+    }
+    #sendBtn {
+      padding: 0.5rem 1rem;
+      font-size: 1rem;
+    }
+    #status {
+      font-size: 0.9rem;
+      color: #555;
+      margin-bottom: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>ESP32 WebSocket Echo</h1>
+
+  <div id="status">Status: <span id="connStatus">Connecting…</span></div>
+
+  <div id="log"></div>
+
+  <div id="inputRow">
+    <input type="text" id="msgInput" placeholder="Type a message…" autofocus />
+    <button id="sendBtn" disabled>Send</button>
+  </div>
+
+  <script>
+    // Grabs references to UI elements
+    const statusElem = document.getElementById('connStatus');
+    const logElem    = document.getElementById('log');
+    const inputElem  = document.getElementById('msgInput');
+    const sendBtn    = document.getElementById('sendBtn');
+
+    // Helper: append a line to the log div
+    function logLine(text) {
+      const line = document.createElement('div');
+      line.textContent = text;
+      logElem.appendChild(line);
+      logElem.scrollTop = logElem.scrollHeight;
+    }
+
+    // Build the WebSocket URL based on current host, assume path is "/ws"
+    const wsProtocol = (location.protocol === 'https:') ? 'wss://' : 'ws://';
+    const wsURL = wsProtocol + location.host + '/ws';
+
+    let socket;
+
+    function connectWebSocket() {
+      socket = new WebSocket(wsURL);
+
+      socket.addEventListener('open', () => {
+        statusElem.textContent = 'Connected';
+        statusElem.style.color = 'green';
+        sendBtn.disabled = false;
+        logLine('[WebSocket Open] Ready to send messages.');
+      });
+
+      socket.addEventListener('message', (event) => {
+        // When the ESP32 echoes back, it will arrive here
+        logLine('[Received] ' + event.data);
+      });
+
+      socket.addEventListener('close', (event) => {
+        statusElem.textContent = 'Disconnected';
+        statusElem.style.color = 'red';
+        sendBtn.disabled = true;
+        logLine('[WebSocket Closed] Code: ' + event.code + ', Reason: ' + event.reason);
+        // Optionally: try to reconnect after a short delay
+        setTimeout(() => {
+          statusElem.textContent = 'Reconnecting…';
+          statusElem.style.color = '#aa6600';
+          logLine('[Reconnecting in 2s...]');
+          setTimeout(connectWebSocket, 2000);
+        }, 0);
+      });
+
+      socket.addEventListener('error', (err) => {
+        console.error('WebSocket error:', err);
+        logLine('[WebSocket Error] Check console for details.');
+      });
+    }
+
+    // Kick off the first connection attempt on load
+    window.addEventListener('load', () => {
+      connectWebSocket();
+    });
+
+    // When the user clicks "Send", push the contents of the input over WS
+    sendBtn.addEventListener('click', () => {
+      const text = inputElem.value.trim();
+      if (text === '' || socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      logLine('[Sent] ' + text);
+      socket.send(text);
+      inputElem.value = '';
+      inputElem.focus();
+    });
+
+    // Allow pressing Enter in the input box to trigger send
+    inputElem.addEventListener('keyup', (e) => {
+      if (e.key === 'Enter' && !sendBtn.disabled) {
+        sendBtn.click();
+      }
+    });
+  </script>
+</body>
+</html>

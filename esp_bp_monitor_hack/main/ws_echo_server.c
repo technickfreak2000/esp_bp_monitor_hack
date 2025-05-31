@@ -15,13 +15,56 @@
 #include <sys/param.h>
 #include "esp_netif.h"
 #include "esp_eth.h"
+#include "esp_vfs.h"
+#include "esp_spiffs.h"
 #include "protocol_examples_common.h"
 
 #include <esp_http_server.h>
 
+
 /* A simple example that demonstrates using websocket echo server
  */
 static const char *TAG = "ws_echo_server";
+
+void mount_spiffs(void)
+{
+    // 1) Fill in the configuration structure
+    esp_vfs_spiffs_conf_t conf = {
+        .base_path      = "/spiffs",       // Where in the VFS API it will be mounted
+        .partition_label = "storage",      // Must match the “label” field in your partition table
+        .max_files      = 5,               // Max number of files open at the same time
+        .format_if_mount_failed = false    // If true, SPIFFS will be formatted if mounting fails
+    };
+
+    // 2) Actually register/mount SPIFFS
+    esp_err_t ret = esp_vfs_spiffs_register(&conf);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "SPIFFS mounted at \"%s\" (label=\"%s\")",
+                 conf.base_path, conf.partition_label);
+    } else if (ret == ESP_FAIL) {
+        ESP_LOGE(TAG, "Failed to mount or format SPIFFS");
+        return;
+    } else if (ret == ESP_ERR_NOT_FOUND) {
+        ESP_LOGE(TAG, "Failed to find SPIFFS partition with label \"%s\"",
+                 conf.partition_label);
+        return;
+    } else {
+        ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)",
+                 esp_err_to_name(ret));
+        return;
+    }
+
+    // 3) (Optional) Query and print some info about the partition
+    size_t total = 0, used = 0;
+    ret = esp_spiffs_info(conf.partition_label, &total, &used);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Partition size: total: %u bytes, used: %u bytes",
+                 (unsigned) total, (unsigned) used);
+    } else {
+        ESP_LOGW(TAG, "Failed to get SPIFFS partition information (%s)",
+                 esp_err_to_name(ret));
+    }
+}
 
 /*
  * Structure holding server handle
@@ -65,6 +108,48 @@ static esp_err_t trigger_async_send(httpd_handle_t handle, httpd_req_t *req)
         free(resp_arg);
     }
     return ret;
+}
+
+esp_err_t index_handler(httpd_req_t *req)
+{
+    // 1) Try to open "/spiffs/index.html" for reading
+    FILE *file = fopen("/spiffs/index.html", "r");
+    if (file == NULL) {
+        ESP_LOGE(TAG, "Failed to open /spiffs/index.html");
+        // Send a 404 response if the file is missing
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+        return ESP_FAIL;
+    }
+
+    // 2) Inform the client that we're sending back HTML
+    httpd_resp_set_type(req, "text/html");
+
+    // 3) Read and send the file in reasonably‐sized chunks
+    char buffer[1024];
+    size_t  read_bytes;
+    do {
+        read_bytes = fread(buffer, 1, sizeof(buffer), file);
+        if (read_bytes > 0) {
+            // Send exactly 'read_bytes' to the HTTP client.
+            // If this fails in the middle, abort and clean up.
+            if (httpd_resp_send_chunk(req, buffer, read_bytes) != ESP_OK) {
+                ESP_LOGE(TAG, "Error sending chunk to client");
+                fclose(file);
+                // Send zero‐length chunk to indicate “end” (so the client doesn’t hang)
+                httpd_resp_send_chunk(req, NULL, 0);
+                return ESP_FAIL;
+            }
+        }
+    } while (read_bytes == sizeof(buffer));
+    // When fread() returns < sizeof(buffer), we’re at EOF (or error).  
+    // If it's an error, we still send whatever we have and then close.
+
+    // 4) Signal end‐of‐response by sending a zero‐length chunk
+    httpd_resp_send_chunk(req, NULL, 0);
+
+    // 5) Clean up the FILE handle
+    fclose(file);
+    return ESP_OK;
 }
 
 /*
@@ -120,6 +205,12 @@ static esp_err_t echo_handler(httpd_req_t *req)
     return ret;
 }
 
+static const httpd_uri_t index_site = {
+        .uri        = "/index.html",
+        .method     = HTTP_GET,
+        .handler    = index_handler,
+};
+
 static const httpd_uri_t ws = {
         .uri        = "/ws",
         .method     = HTTP_GET,
@@ -140,6 +231,7 @@ static httpd_handle_t start_webserver(void)
         // Registering the ws handler
         ESP_LOGI(TAG, "Registering URI handlers");
         httpd_register_uri_handler(server, &ws);
+        httpd_register_uri_handler(server, &index_site);
         return server;
     }
 
@@ -185,6 +277,8 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    mount_spiffs();
 
     /* This helper function configures Wi-Fi or Ethernet, as selected in menuconfig.
      * Read "Establishing Wi-Fi or Ethernet Connection" section in
