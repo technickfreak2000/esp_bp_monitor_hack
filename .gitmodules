@@ -1,0 +1,6 @@
+[submodule "esp_bp_monitor_hack/components/u8g2"]
+	path = esp_bp_monitor_hack/components/u8g2
+	url = https://github.com/olikraus/u8g2.git
+[submodule "esp_bp_monitor_hack/components/u8g2_hal_esp_idf"]
+	path = esp_bp_monitor_hack/components/u8g2_hal_esp_idf
+	url = https://github.com/mkfrey/u8g2-hal-esp-idf.git
