@@ -56,14 +56,31 @@ static void draw_snake(u8g2_t *u8g2);
 typedef enum { DIR_RIGHT=0, DIR_DOWN, DIR_LEFT, DIR_UP } Dir;
 typedef struct { uint8_t x, y; Dir dir; } SnakePoint;
 static const SnakePoint snake_path[] = {
-  {9,37,DIR_RIGHT},{17,37,DIR_RIGHT},{23,37,DIR_DOWN},
-  {23,45,DIR_DOWN},{23,53,DIR_LEFT},{15,53,DIR_LEFT},
-  {9,53,DIR_UP},  {9,45,DIR_UP}
+    {  6, 37, DIR_RIGHT },
+    { 14, 37, DIR_RIGHT },
+    { 20, 37, DIR_RIGHT },
+    { 26, 37, DIR_RIGHT },
+    { 32, 37, DIR_RIGHT },
+    { 38, 37, DIR_RIGHT },
+    { 44, 37, DIR_RIGHT },
+    { 50, 37, DIR_RIGHT },
+    { 56, 37, DIR_RIGHT },
+    { 56, 45, DIR_DOWN  },
+    { 56, 53, DIR_DOWN  },
+    { 50, 53, DIR_LEFT  },
+    { 44, 53, DIR_LEFT  },
+    { 38, 53, DIR_LEFT  },
+    { 32, 53, DIR_LEFT  },
+    { 26, 53, DIR_LEFT  },
+    { 20, 53, DIR_LEFT  },
+    { 14, 53, DIR_LEFT  },
+    {  6, 53, DIR_LEFT  },
+    {  6, 45, DIR_UP    }
 };
 static const int SNAKE_PATH_LEN = sizeof(snake_path)/sizeof(snake_path[0]);
 static int  snake_head_idx     = 0;
-static bool snake_wiggle       = false;
-static uint8_t snake_body_sections = 1;
+static bool snake_wiggle       = true;
+static uint8_t snake_body_sections = 4;
 
 // Body bitmaps (RIGHT, DOWN, LEFT, UP)
 static const uint8_t *body_bm[4] = {
@@ -83,10 +100,10 @@ static const uint8_t *head_bm[4] = {
 
 // Tail bitmaps (RIGHT, DOWN, LEFT, UP)
 static const uint8_t *tail_bm[4] = {
-    (const uint8_t[]){ 0x06, 0x09, 0x11, 0x09, 0x06 }, // RIGHT
-    (const uint8_t[]){ 0x0e, 0x11, 0x11, 0x0a, 0x04 }, // DOWN
-    (const uint8_t[]){ 0x0c, 0x12, 0x11, 0x12, 0x0c }, // LEFT
-    (const uint8_t[]){ 0x04, 0x0a, 0x11, 0x11, 0x0e }  // UP
+    (const uint8_t[]){ 0x0c, 0x12, 0x11, 0x12, 0x0c }, // RIGHT
+    (const uint8_t[]){ 0x04, 0x0a, 0x11, 0x11, 0x0e }, // DOWN
+    (const uint8_t[]){ 0x06, 0x09, 0x11, 0x09, 0x06 }, // LEFT
+    (const uint8_t[]){ 0x0e, 0x11, 0x11, 0x0a, 0x04 }  // UP
 };
 
 #endif
