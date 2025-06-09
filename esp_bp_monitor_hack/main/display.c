@@ -153,15 +153,16 @@ static void draw_snake(u8g2_t *u8g2)
     u8g2_DrawXBM(u8g2, snake_path[ti].x, snake_path[ti].y, 5, 5, tail_bm[snake_path[ti].dir]);
 }
 
-void draw_ota(char partition_name[8], uint8_t progress_percent, char info[25])
+void draw_ota(char *partition_name, uint8_t progress_percent, char *info)
 {
-    partition_name[8] = "\0";
-    info[25] = "\0";
+    partition_name[8] = '\0';
+    info[25] = '\0';
 
     portENTER_CRITICAL(&display_mux);
-    previously_displayed = draw_ota;
+    previously_displayed = NULL;
     portEXIT_CRITICAL(&display_mux);
 
+    xSemaphoreTake(display_mutex, portMAX_DELAY);
     u8g2_ClearBuffer(&u8g2);
     u8g2_SetBitmapMode(&u8g2, 1);
     u8g2_SetFontMode(&u8g2, 1);
@@ -191,6 +192,7 @@ void draw_ota(char partition_name[8], uint8_t progress_percent, char info[25])
     u8g2_DrawStr(&u8g2, 4, 62, info);
 
     u8g2_SendBuffer(&u8g2);
+    xSemaphoreGive(display_mutex);
 }
 
 void draw_welcome()

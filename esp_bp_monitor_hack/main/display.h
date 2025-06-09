@@ -24,7 +24,8 @@ void draw_no_measurement();
 void draw_measuring();
 void task_snake();
 void task_init();
-void draw_ota(char partition_name[8], uint8_t progress_percent, char info[25]);
+void draw_welcome();
+void draw_ota(char *partition_name, uint8_t progress_percent, char *info);
 
 static uint16_t systole = 0;
 static uint16_t diastole = 0;
