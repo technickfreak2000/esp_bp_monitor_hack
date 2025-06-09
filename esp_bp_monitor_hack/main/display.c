@@ -46,11 +46,35 @@ void u8g2_init_display()
     u8g2_InitDisplay(&u8g2);
     u8g2_SetPowerSave(&u8g2, 0);
     u8g2_ClearBuffer(&u8g2);
+    u8g2_SendBuffer(&u8g2);
+    xSemaphoreGive(display_mutex);
+    xTaskCreate(task_init, "task_init", 4096, NULL, 4, NULL);
+}
+
+void task_init()
+{
+    xSemaphoreTake(display_mutex, portMAX_DELAY);
+    draw_welcome();
+    xSemaphoreGive(display_mutex);
+
+    vTaskDelay(pdMS_TO_TICKS(2000));
+
+    xSemaphoreTake(display_mutex, portMAX_DELAY);
+    u8g2_ClearBuffer(&u8g2);
+    u8g2_SendBuffer(&u8g2);
+    xSemaphoreGive(display_mutex);
+
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    xSemaphoreTake(display_mutex, portMAX_DELAY);
+    draw_no_measurement();
     xSemaphoreGive(display_mutex);
 
     // update_measurement(59, 83, 23, false);
-    draw_measuring();
-    xTaskCreate(task_snake, "task_snake", 4096, NULL, 4, NULL);
+    // draw_measuring();
+    // xTaskCreate(task_snake, "task_snake", 4096, NULL, 4, NULL);
+
+    vTaskDelete(NULL);
 }
 
 void update_display()
@@ -105,23 +129,90 @@ static void add_head(u8g2_t *u8g2)
     u8g2_DrawLine(u8g2, 127, 15, 0, 15);
 }
 
-static void draw_snake(u8g2_t *u8g2) {
+static void draw_snake(u8g2_t *u8g2)
+{
     int h = snake_head_idx, len = SNAKE_PATH_LEN;
     // head
-    u8g2_DrawXBM(u8g2, snake_path[h].x, snake_path[h].y, 7,7, head_bm[snake_path[h].dir]);
+    u8g2_DrawXBM(u8g2, snake_path[h].x, snake_path[h].y, 7, 7, head_bm[snake_path[h].dir]);
     // body
-    for (int s=1; s<=snake_body_sections; s++) {
+    for (int s = 1; s <= snake_body_sections; s++)
+    {
         int bi = (h - s + len) % len;
         uint8_t bx = snake_path[bi].x, by = snake_path[bi].y;
-        if (snake_wiggle && (s & 1)) {
-            if (snake_path[bi].dir == DIR_RIGHT || snake_path[bi].dir == DIR_LEFT) by++;
-            else bx++;
+        if (snake_wiggle && (s & 1))
+        {
+            if (snake_path[bi].dir == DIR_RIGHT || snake_path[bi].dir == DIR_LEFT)
+                by++;
+            else
+                bx++;
         }
-        u8g2_DrawXBM(u8g2, bx, by, 5,5, body_bm[snake_path[bi].dir]);
+        u8g2_DrawXBM(u8g2, bx, by, 5, 5, body_bm[snake_path[bi].dir]);
     }
     // tail
     int ti = (h - snake_body_sections - 1 + len) % len;
-    u8g2_DrawXBM(u8g2, snake_path[ti].x, snake_path[ti].y, 5,5, tail_bm[snake_path[ti].dir]);
+    u8g2_DrawXBM(u8g2, snake_path[ti].x, snake_path[ti].y, 5, 5, tail_bm[snake_path[ti].dir]);
+}
+
+void draw_ota(char partition_name[8], uint8_t progress_percent, char info[25])
+{
+    partition_name[8] = "\0";
+    info[25] = "\0";
+
+    portENTER_CRITICAL(&display_mux);
+    previously_displayed = draw_ota;
+    portEXIT_CRITICAL(&display_mux);
+
+    u8g2_ClearBuffer(&u8g2);
+    u8g2_SetBitmapMode(&u8g2, 1);
+    u8g2_SetFontMode(&u8g2, 1);
+
+    u8g2_SetFont(&u8g2, u8g2_font_profont17_tr);
+    u8g2_DrawStr(&u8g2, 1, 11, "OTA Update...");
+
+    u8g2_DrawLine(&u8g2, 0, 15, 127, 15);
+
+    u8g2_SetFont(&u8g2, u8g2_font_profont15_tr);
+    u8g2_DrawStr(&u8g2, 2, 29, "Partition:");
+
+    u8g2_DrawStr(&u8g2, 75, 29, partition_name);
+
+    u8g2_SetFont(&u8g2, u8g2_font_profont10_tr);
+    u8g2_DrawStr(&u8g2, 2, 41, "Progress:");
+    u8g2_DrawFrame(&u8g2, 48, 35, 78, 7);
+
+    // 50 + progrss_offset <= 123
+    uint8_t progress_offset = (float)progress_percent / 100 * 75;
+    u8g2_DrawLine(&u8g2, 50, 39, 50 + progress_offset, 39);
+    u8g2_DrawLine(&u8g2, 50, 37, 50 + progress_offset, 37);
+    u8g2_DrawLine(&u8g2, 50, 38, 50 + progress_offset, 38);
+
+    u8g2_DrawStr(&u8g2, 1, 53, "Info:");
+
+    u8g2_DrawStr(&u8g2, 4, 62, info);
+
+    u8g2_SendBuffer(&u8g2);
+}
+
+void draw_welcome()
+{
+    portENTER_CRITICAL(&display_mux);
+    previously_displayed = draw_welcome;
+    portEXIT_CRITICAL(&display_mux);
+
+    u8g2_DrawXBM(&u8g2, 73, 16, 54, 33, image_welcome_bits);
+
+    u8g2_DrawLine(&u8g2, 0, 15, 126, 15);
+
+    u8g2_SetFont(&u8g2, u8g2_font_profont17_tr);
+    u8g2_DrawStr(&u8g2, 1, 38, "Welcome");
+
+    u8g2_SetFont(&u8g2, u8g2_font_profont11_tr);
+    u8g2_DrawStr(&u8g2, 4, 56, "By TECH-FREAK");
+
+    u8g2_SetFont(&u8g2, u8g2_font_profont10_tr);
+    u8g2_DrawStr(&u8g2, 66, 64, "Industries");
+
+    u8g2_SendBuffer(&u8g2);
 }
 
 void draw_error()
@@ -139,6 +230,9 @@ void draw_error()
     // Menu
     u8g2_DrawXBM(&u8g2, 0, 30, 16, 16, image_menu_settings_gear_bits);
     u8g2_DrawXBM(&u8g2, 116, 29, 12, 16, image_operation_undo_bits);
+
+    u8g2_SetFont(&u8g2, u8g2_font_profont29_tr);
+    u8g2_DrawStr(&u8g2, 25, 47, "ERROR");
 
     u8g2_SendBuffer(&u8g2);
 }
@@ -158,6 +252,9 @@ void draw_no_measurement()
     // Menu
     u8g2_DrawXBM(&u8g2, 0, 30, 16, 16, image_menu_settings_gear_bits);
     u8g2_DrawXBM(&u8g2, 116, 29, 12, 16, image_operation_undo_bits);
+
+    u8g2_SetFont(&u8g2, u8g2_font_profont15_tr);
+    u8g2_DrawStr(&u8g2, 17, 28, "No Measurement");
 
     u8g2_SendBuffer(&u8g2);
 }
@@ -180,7 +277,7 @@ void draw_measuring()
 
     u8g2_SetFont(&u8g2, u8g2_font_profont15_tr);
     u8g2_DrawStr(&u8g2, 3, 27, "Measuring");
-    
+
     u8g2_DrawXBM(&u8g2, 96, 17, 15, 16, image_cards_hearts_bits);
 
     u8g2_SetFont(&u8g2, u8g2_font_profont29_tr);
@@ -417,7 +514,7 @@ void task_snake()
         }
 
         snake_head_idx = (snake_head_idx + 1) % SNAKE_PATH_LEN;
-        snake_wiggle   = !snake_wiggle;
+        snake_wiggle = !snake_wiggle;
 
         update_display();
         vTaskDelay(pdMS_TO_TICKS(100));

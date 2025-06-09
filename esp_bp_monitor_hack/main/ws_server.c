@@ -13,6 +13,9 @@
 #include <esp_system.h>
 #include "ws_server.h"
 #include "bpm_handler.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
+
 static esp_err_t trigger_async_send(httpd_handle_t handle, int fd, const char *msg);
 
 static const char *TAG = "ws_server";
@@ -224,6 +227,107 @@ static esp_err_t ws_handler(httpd_req_t *req)
     return ret;
 }
 
+#define BUF_SIZE        1024
+#define PART_ARG_LEN    16
+
+static esp_err_t ota_update_handler(httpd_req_t *req)
+{
+    char buf[BUF_SIZE];
+    int total = 0, ret;
+    esp_err_t err;
+    const char *part_q = httpd_req_get_url_query_str(req, buf, sizeof(buf)) 
+                            ? buf : "";
+
+    // figure out which partition
+    char part_name[PART_ARG_LEN] = {0};
+    httpd_query_key_value(part_q, "partition", part_name, PART_ARG_LEN);
+    bool is_fw = (strcmp(part_name, "firmware") == 0);
+
+    // select partition
+    const esp_partition_t *update_part = NULL;
+    if (is_fw) {
+        update_part = esp_ota_get_next_update_partition(NULL);
+    } else {
+        update_part = esp_partition_find_first(
+            ESP_PARTITION_TYPE_DATA,
+            ESP_PARTITION_SUBTYPE_DATA_SPIFFS,
+            "storage"
+        );
+    }
+    if (update_part == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Partition not found");
+        return ESP_FAIL;
+    }
+
+    // start OTA (or erase SPIFFS)
+    esp_ota_handle_t ota_handle = 0;
+    if (is_fw) {
+        err = esp_ota_begin(update_part, OTA_SIZE_UNKNOWN, &ota_handle);
+        if (err != ESP_OK) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                "esp_ota_begin failed");
+            return err;
+        }
+    } else {
+        // erase entire SPIFFS partition
+        err = esp_partition_erase_range(update_part, 0, update_part->size);
+        if (err != ESP_OK) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                "SPIFFS erase failed");
+            return err;
+        }
+    }
+
+    // read the uploaded file in chunks
+    while ((ret = httpd_req_recv(req, buf, BUF_SIZE)) > 0) {
+        if (is_fw) {
+            err = esp_ota_write(ota_handle, (const void *)buf, ret);
+            if (err != ESP_OK) {
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                    "esp_ota_write failed");
+                esp_ota_end(ota_handle);
+                return err;
+            }
+        } else {
+            // write raw to SPIFFS partition
+            err = esp_partition_write(update_part, total, buf, ret);
+            if (err != ESP_OK) {
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                    "SPIFFS write failed");
+                return err;
+            }
+        }
+        total += ret;
+    }
+    if (ret < 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "Failed to receive file");
+        return ESP_FAIL;
+    }
+
+    if (is_fw) {
+        err = esp_ota_end(ota_handle);
+        if (err != ESP_OK) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                "esp_ota_end failed");
+            return err;
+        }
+        // switch boot partition
+        err = esp_ota_set_boot_partition(update_part);
+        if (err != ESP_OK) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                "esp_ota_set_boot_partition failed");
+            return err;
+        }
+    }
+
+    // success!
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
 static const httpd_uri_t index_site = {
         .uri        = "/index.html",
         .method     = HTTP_GET,
@@ -236,6 +340,13 @@ static const httpd_uri_t ws = {
         .handler    = ws_handler,
         .user_ctx   = NULL,
         .is_websocket = true
+};
+
+static const httpd_uri_t ota_update = {
+    .uri        = "/update",
+    .method     = HTTP_POST,
+    .handler    = ota_update_handler,
+    .user_ctx   = NULL
 };
 
 
@@ -251,6 +362,7 @@ httpd_handle_t start_webserver(void)
         ESP_LOGI(TAG, "Registering URI handlers");
         httpd_register_uri_handler(server, &ws);
         httpd_register_uri_handler(server, &index_site);
+        httpd_register_uri_handler(server, &ota_update);
 
         ESP_LOGI(TAG, "Creating tasks");
         // xTaskCreate(ws_help_broadcast_task, "ws_help_broadcast_task", 4096, server, 5, NULL);

@@ -1,8 +1,9 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ESP32 WebSocket Echo Client</title>
   <style>
     body {
@@ -12,10 +13,12 @@
       padding: 0 1rem;
       line-height: 1.5;
     }
+
     h1 {
       text-align: center;
       margin-bottom: 1rem;
     }
+
     #log {
       border: 1px solid #ccc;
       height: 300px;
@@ -27,20 +30,24 @@
       font-family: Consolas, monospace;
       font-size: 0.9rem;
     }
+
     #inputRow {
       display: flex;
       gap: 0.5rem;
       margin-bottom: 1rem;
     }
+
     #msgInput {
       flex: 1;
       padding: 0.5rem;
       font-size: 1rem;
     }
+
     #sendBtn {
       padding: 0.5rem 1rem;
       font-size: 1rem;
     }
+
     #status {
       font-size: 0.9rem;
       color: #555;
@@ -48,6 +55,7 @@
     }
   </style>
 </head>
+
 <body>
   <h1>ESP32 WebSocket Echo</h1>
 
@@ -60,12 +68,23 @@
     <button id="sendBtn" disabled>Send</button>
   </div>
 
+  <!-- OTA Update Section -->
+  <h2>OTA Update</h2>
+  <div id="otaControls" style="margin-bottom:1rem;">
+    <button id="otaFirmwareBtn">Firmware</button>
+    <button id="otaSpiffsBtn">Spiffs</button>
+    <!-- hidden file inputs -->
+    <input type="file" id="otaFirmwareInput" accept=".bin" style="display:none;" />
+    <input type="file" id="otaSpiffsInput" accept=".bin" style="display:none;" />
+    <div id="otaStatus" style="margin-top:0.5rem; font-size:0.9rem; color:#333;"></div>
+  </div>
+
   <script>
     // Grabs references to UI elements
     const statusElem = document.getElementById('connStatus');
-    const logElem    = document.getElementById('log');
-    const inputElem  = document.getElementById('msgInput');
-    const sendBtn    = document.getElementById('sendBtn');
+    const logElem = document.getElementById('log');
+    const inputElem = document.getElementById('msgInput');
+    const sendBtn = document.getElementById('sendBtn');
 
     // Helper: append a line to the log div
     function logLine(text) {
@@ -139,6 +158,51 @@
         sendBtn.click();
       }
     });
+
+    // OTA elements
+    const otaFirmwareBtn = document.getElementById('otaFirmwareBtn');
+    const otaSpiffsBtn = document.getElementById('otaSpiffsBtn');
+    const otaFirmwareInput = document.getElementById('otaFirmwareInput');
+    const otaSpiffsInput = document.getElementById('otaSpiffsInput');
+    const otaStatus = document.getElementById('otaStatus');
+
+    // when you click the buttons, trigger the hidden file pickers
+    otaFirmwareBtn.addEventListener('click', () => otaFirmwareInput.click());
+    otaSpiffsBtn.addEventListener('click', () => otaSpiffsInput.click());
+
+    // common upload handler
+    function handleOtaUpload(inputElem, partitionName) {
+      const file = inputElem.files[0];
+      if (!file) return;
+      otaStatus.textContent = `Uploading ${file.name} to ${partitionName}…`;
+      const form = new FormData();
+      form.append('file', file);
+
+      fetch(`/update?partition=${encodeURIComponent(partitionName)}`, {
+        method: 'POST',
+        body: form
+      })
+        .then(resp => {
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          return resp.text();
+        })
+        .then(msg => {
+          otaStatus.textContent = `Success: ${msg}`;
+          // optionally: reboot prompt here
+        })
+        .catch(err => {
+          otaStatus.textContent = `Error: ${err.message}`;
+        });
+    }
+
+    // wire up change events
+    otaFirmwareInput.addEventListener('change', () => {
+      handleOtaUpload(otaFirmwareInput, 'firmware');
+    });
+    otaSpiffsInput.addEventListener('change', () => {
+      handleOtaUpload(otaSpiffsInput, 'spiffs');
+    });
   </script>
 </body>
+
 </html>
