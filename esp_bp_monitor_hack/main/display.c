@@ -155,9 +155,6 @@ static void draw_snake(u8g2_t *u8g2)
 
 void draw_ota(char *partition_name, uint8_t progress_percent, char *info)
 {
-    partition_name[8] = '\0';
-    info[25] = '\0';
-
     portENTER_CRITICAL(&display_mux);
     previously_displayed = NULL;
     portEXIT_CRITICAL(&display_mux);
@@ -182,7 +179,7 @@ void draw_ota(char *partition_name, uint8_t progress_percent, char *info)
     u8g2_DrawFrame(&u8g2, 48, 35, 78, 7);
 
     // 50 + progrss_offset <= 123
-    uint8_t progress_offset = (float)progress_percent / 100 * 75;
+    uint8_t progress_offset = (float)progress_percent / 100 * 73;
     u8g2_DrawLine(&u8g2, 50, 39, 50 + progress_offset, 39);
     u8g2_DrawLine(&u8g2, 50, 37, 50 + progress_offset, 37);
     u8g2_DrawLine(&u8g2, 50, 38, 50 + progress_offset, 38);
@@ -193,6 +190,7 @@ void draw_ota(char *partition_name, uint8_t progress_percent, char *info)
 
     u8g2_SendBuffer(&u8g2);
     xSemaphoreGive(display_mutex);
+    vTaskDelay(1);
 }
 
 void draw_welcome()
@@ -202,8 +200,6 @@ void draw_welcome()
     portEXIT_CRITICAL(&display_mux);
 
     u8g2_DrawXBM(&u8g2, 73, 16, 54, 33, image_welcome_bits);
-
-    u8g2_DrawLine(&u8g2, 0, 15, 126, 15);
 
     u8g2_SetFont(&u8g2, u8g2_font_profont17_tr);
     u8g2_DrawStr(&u8g2, 1, 38, "Welcome");

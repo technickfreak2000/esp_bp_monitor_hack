@@ -260,7 +260,7 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
 {
     size_t total_len = req->content_len;
     size_t received = 0;
-    int pct_received = 0;
+    uint8_t pct_received = 0;
     char buf[BUF_SIZE];
     int total = 0, ret;
     esp_err_t err;
@@ -350,8 +350,15 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
             }
         }
         total += ret;
-        pct_received = (int)((received * 100) / total_len);
-        draw_ota(is_fw ? "OS" : "SPIFFS", pct_received, "downloading...");
+        received += ret;
+        uint8_t new_pct_received = (uint8_t)((received * 100) / total_len);
+        if (pct_received != new_pct_received)
+        {
+            // ESP_LOGW(TAG, "Packets received: %d%%", pct_received);
+            pct_received = new_pct_received;
+            draw_ota(is_fw ? "OS" : "SPIFFS", pct_received, "downloading...");
+        }
+        
     }
     if (ret < 0)
     {
