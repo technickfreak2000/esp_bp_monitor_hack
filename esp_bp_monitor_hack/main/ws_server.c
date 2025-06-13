@@ -16,6 +16,7 @@
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "display.h"
+#include <esp_app_format.h>
 
 static esp_err_t trigger_async_send(httpd_handle_t handle, int fd, const char *msg);
 
@@ -268,14 +269,14 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
                              ? buf
                              : "";
 
-    // figure out which partition
+    // Determine which partition to update
     char part_name[PART_ARG_LEN] = {0};
     httpd_query_key_value(part_q, "partition", part_name, PART_ARG_LEN);
     bool is_fw = (strcmp(part_name, "firmware") == 0);
 
     draw_ota(is_fw ? "OS" : "SPIFFS", 0, "ready");
 
-    // select partition
+    // Select the partition
     const esp_partition_t *update_part = NULL;
     if (is_fw)
     {
@@ -296,8 +297,17 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    // start OTA (or erase SPIFFS)
+    // Start OTA or erase SPIFFS
     esp_ota_handle_t ota_handle = 0;
+    size_t header_skipped = 0;
+    const size_t header_size = sizeof(esp_image_header_t) +
+                               sizeof(esp_image_segment_header_t) +
+                               sizeof(esp_app_desc_t);
+
+    esp_image_header_t img_header;
+    esp_image_segment_header_t seg_header;
+    esp_app_desc_t app_desc;
+
     if (is_fw)
     {
         err = esp_ota_begin(update_part, OTA_SIZE_UNKNOWN, &ota_handle);
@@ -311,7 +321,6 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
     }
     else
     {
-        // erase entire SPIFFS partition
         err = esp_partition_erase_range(update_part, 0, update_part->size);
         if (err != ESP_OK)
         {
@@ -322,9 +331,33 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
         }
     }
 
-    // read the uploaded file in chunks
+    // Read the uploaded file in chunks
     while ((ret = httpd_req_recv(req, buf, BUF_SIZE)) > 0)
     {
+        if (header_skipped < header_size)
+        {
+            // Skip the header for both firmware and SPIFFS updates
+            size_t to_skip = header_size - header_skipped;
+            if (ret <= to_skip)
+            {
+                header_skipped += ret;
+                continue;
+            }
+            else
+            {
+                header_skipped = header_size;
+                memcpy(&img_header, buf, sizeof(esp_image_header_t));
+                memcpy(&seg_header, buf + sizeof(esp_image_header_t), sizeof(esp_image_segment_header_t));
+                memcpy(&app_desc, buf + sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t), sizeof(esp_app_desc_t));
+
+                ESP_LOGI(TAG, "App version: %s", app_desc.version);
+                ESP_LOGI(TAG, "Project name: %s", app_desc.project_name);
+
+                memmove(buf, buf + to_skip, ret - to_skip);
+                ret -= to_skip;
+            }
+        }
+
         if (is_fw)
         {
             err = esp_ota_write(ota_handle, (const void *)buf, ret);
@@ -339,7 +372,6 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
         }
         else
         {
-            // write raw to SPIFFS partition
             err = esp_partition_write(update_part, total, buf, ret);
             if (err != ESP_OK)
             {
@@ -354,11 +386,9 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
         uint8_t new_pct_received = (uint8_t)((received * 100) / total_len);
         if (pct_received != new_pct_received)
         {
-            // ESP_LOGW(TAG, "Packets received: %d%%", pct_received);
             pct_received = new_pct_received;
             draw_ota(is_fw ? "OS" : "SPIFFS", pct_received, "downloading...");
         }
-        
     }
     if (ret < 0)
     {
@@ -378,7 +408,6 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
             draw_ota(is_fw ? "OS" : "SPIFFS", pct_received, "esp_ota_end failed");
             return err;
         }
-        // switch boot partition
         err = esp_ota_set_boot_partition(update_part);
         if (err != ESP_OK)
         {
@@ -389,14 +418,32 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
         }
     }
 
-    // success!
+    // Success
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req, "OK");
-    draw_ota(is_fw ? "OS" : "SPIFFS", 100, "Rebooting now ...");
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    esp_restart();
+    
+    TimerHandle_t reboot_timer = xTimerCreate(
+        "reboot_timer",              // name (for debugging)
+        pdMS_TO_TICKS(10000),        // period in ticks (10 000 ms)
+        pdFALSE,                     // pdFALSE = one‐shot, pdTRUE = auto‐reload
+        NULL,                        // timer “ID” (not needed here)
+        reboot_timer_cb             // callback
+    );
+    ESP_LOGE(TAG, "OTA complete");
+
+    if (xTimerStart(reboot_timer, /*ticks to wait*/ 100) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to start reboot timer");
+    }
 
     return ESP_OK;
+}
+
+static void reboot_timer_cb(TimerHandle_t xTimer)
+{
+    draw_ota("Update", 100, "Rebooting now ...");
+    ESP_LOGE(TAG, "Restarting...");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart(); 
 }
 
 static const httpd_uri_t index_site = {
