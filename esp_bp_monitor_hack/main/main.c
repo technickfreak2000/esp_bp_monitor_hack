@@ -9,6 +9,7 @@
 #include "esp_vfs.h"
 #include "esp_spiffs.h"
 #include "protocol_examples_common.h"
+#include "esp_ota_ops.h"
 
 #include <esp_http_server.h>
 
@@ -23,6 +24,23 @@
 
 void app_main(void)
 {
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (running)
+    {
+        ESP_LOGE("ota_info",
+                 "Booted from partition label=\"%s\", "
+                 "type=0x%02x, subtype=0x%02x, "
+                 "address=0x%08" PRIx32,
+                 running->label,
+                 (unsigned)running->type,
+                 (unsigned)running->subtype,
+                 running->address);
+    }
+    else
+    {
+        ESP_LOGE("ota_info", "esp_ota_get_running_partition() returned NULL!");
+    }
+
     // zero-initialize the config structure.
     gpio_config_t io_conf = {};
     // disable interrupt

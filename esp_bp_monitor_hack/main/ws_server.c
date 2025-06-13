@@ -16,7 +16,9 @@
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "display.h"
+#include "sys/param.h"
 #include <esp_app_format.h>
+#include "spiffs.h"
 
 static esp_err_t trigger_async_send(httpd_handle_t handle, int fd, const char *msg);
 
@@ -257,7 +259,7 @@ static esp_err_t ws_handler(httpd_req_t *req)
 #define BUF_SIZE 1024
 #define PART_ARG_LEN 16
 
-static esp_err_t ota_update_handler(httpd_req_t *req)
+static esp_err_t otaw2_update_handler(httpd_req_t *req)
 {
     size_t total_len = req->content_len;
     size_t received = 0;
@@ -435,6 +437,144 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
         ESP_LOGE(TAG, "Failed to start reboot timer");
     }
 
+    return ESP_OK;
+}
+
+static esp_err_t ota_update_handler(httpd_req_t *req)
+{
+    esp_err_t err;
+    /* update handle : set by esp_ota_begin(), must be freed via esp_ota_end() */
+    esp_ota_handle_t update_handle = 0 ;
+    const esp_partition_t *update_partition = NULL;
+
+    ESP_LOGI(TAG, "Starting OTA example task");
+
+    const esp_partition_t *configured = esp_ota_get_boot_partition();
+    const esp_partition_t *running = esp_ota_get_running_partition();
+
+    if (configured != running) {
+        ESP_LOGW(TAG, "Configured OTA boot partition at offset 0x%08"PRIx32", but running from offset 0x%08"PRIx32,
+                 configured->address, running->address);
+        ESP_LOGW(TAG, "(This can happen if either the OTA boot data or preferred boot image become corrupted somehow.)");
+    }
+    ESP_LOGI(TAG, "Running partition type %d subtype %d (offset 0x%08"PRIx32")",
+             running->type, running->subtype, running->address);
+
+    update_partition = esp_ota_get_next_update_partition(NULL);
+    assert(update_partition != NULL);
+    ESP_LOGI(TAG, "Writing to partition subtype %d at offset 0x%"PRIx32,
+             update_partition->subtype, update_partition->address);
+
+    int binary_file_length = 0;
+
+    char *buf = malloc(BUF_SIZE);
+    int received;
+
+    /* Content length of the request gives
+     * the size of the file being uploaded */
+    int remaining = req->content_len;
+
+    /*deal with all receive packet*/
+    bool image_header_was_checked = false;
+    while (remaining > 0) {
+        int data_read = httpd_req_recv(req, buf, BUF_SIZE);
+        ESP_LOGI(TAG, "Remaining: %d", remaining);
+        if (data_read <= 0) {
+            if (data_read == HTTPD_SOCK_ERR_TIMEOUT) {
+                /* Retry if timeout occurred */
+                continue;
+            }
+
+            ESP_LOGE(TAG, "OTA reception failed!");
+            /* Respond with 500 Internal Server Error */
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to receive ota");
+            return ESP_FAIL;
+        } else {
+            if (image_header_was_checked == false) {
+                esp_app_desc_t new_app_info;
+                if (data_read > sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t)) {
+                    // check current version with downloading
+                    memcpy(&new_app_info, &buf[sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t)], sizeof(esp_app_desc_t));
+                    ESP_LOGI(TAG, "New firmware version: %s", new_app_info.version);
+
+                    esp_app_desc_t running_app_info;
+                    if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK) {
+                        ESP_LOGI(TAG, "Running firmware version: %s", running_app_info.version);
+                    }
+
+                    const esp_partition_t* last_invalid_app = esp_ota_get_last_invalid_partition();
+                    esp_app_desc_t invalid_app_info;
+                    if (esp_ota_get_partition_description(last_invalid_app, &invalid_app_info) == ESP_OK) {
+                        ESP_LOGI(TAG, "Last invalid firmware version: %s", invalid_app_info.version);
+                    }
+
+                    // check current version with last invalid partition
+                    if (last_invalid_app != NULL) {
+                        if (memcmp(invalid_app_info.version, new_app_info.version, sizeof(new_app_info.version)) == 0) {
+                            ESP_LOGW(TAG, "New version is the same as invalid version.");
+                            ESP_LOGW(TAG, "Previously, there was an attempt to launch the firmware with %s version, but it failed.", invalid_app_info.version);
+                            ESP_LOGW(TAG, "The firmware has been rolled back to the previous version.");
+                            return ESP_FAIL;
+                        }
+                    }
+
+                    image_header_was_checked = true;
+
+                    err = esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle);
+                    if (err != ESP_OK) {
+                        ESP_LOGE(TAG, "esp_ota_begin failed (%s)", esp_err_to_name(err));
+                        esp_ota_abort(update_handle);
+                        return ESP_FAIL;
+                    }
+                    ESP_LOGI(TAG, "esp_ota_begin succeeded");
+                } else {
+                    ESP_LOGE(TAG, "received package is not fit len");
+                    esp_ota_abort(update_handle);
+                    return ESP_FAIL;
+                }
+            }
+            err = esp_ota_write( update_handle, (const void *)buf, data_read);
+            if (err != ESP_OK) {
+                esp_ota_abort(update_handle);
+                return ESP_FAIL;
+            }
+            binary_file_length += data_read;
+            ESP_LOGD(TAG, "Written image length %d", binary_file_length);
+        }
+        remaining -= data_read;
+    }
+
+    ESP_LOGI(TAG, "Total Write binary data length: %d", binary_file_length);
+
+    err = esp_ota_end(update_handle);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_OTA_VALIDATE_FAILED) {
+            ESP_LOGE(TAG, "Image validation failed, image is corrupted");
+        } else {
+            ESP_LOGE(TAG, "esp_ota_end failed (%s)!", esp_err_to_name(err));
+        }
+        return err;
+    }
+
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_set_boot_partition failed (%s)!", esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "Prepare to restart system!");
+   
+    TimerHandle_t reboot_timer = xTimerCreate(
+        "reboot_timer",              // name (for debugging)
+        pdMS_TO_TICKS(10000),        // period in ticks (10 000 ms)
+        pdFALSE,                     // pdFALSE = one‐shot, pdTRUE = auto‐reload
+        NULL,                        // timer “ID” (not needed here)
+        reboot_timer_cb             // callback
+    );
+    ESP_LOGE(TAG, "OTA complete");
+
+    if (xTimerStart(reboot_timer, /*ticks to wait*/ 100) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to start reboot timer");
+    }
     return ESP_OK;
 }
 
