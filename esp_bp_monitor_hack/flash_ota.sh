@@ -72,8 +72,7 @@ ota_upload() {
     exit 1
   fi
   echo "Uploading $file → http://$IP/update?partition=$part"
-  response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
-    -F file=@"$file" \
+  response=$(curl -X POST --data-binary @"$file" \
     "http://$IP/update?partition=$part")
   body=$(echo "$response" | sed -e 's/HTTP_STATUS\:.*//g')
   status=$(echo "$response" | tr -d '\r' | awk -F'HTTP_STATUS:' '{print $2}')
