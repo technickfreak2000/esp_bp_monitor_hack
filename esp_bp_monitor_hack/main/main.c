@@ -19,7 +19,7 @@
 #include "driver/i2c.h"
 #include "display.h"
 
-#define GPIO_OUTPUT_IO_0 13
+#define GPIO_OUTPUT_IO_0 23
 #define GPIO_OUTPUT_PIN_SEL ((1ULL << GPIO_OUTPUT_IO_0))
 
 void app_main(void)

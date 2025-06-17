@@ -21,9 +21,9 @@ void stop_measurement()
 
 static void take_measurement()
 {
-    gpio_set_level(13, 0);
+    gpio_set_level(23, 0);
     vTaskDelay(pdMS_TO_TICKS(500));
-    gpio_set_level(13, 1);
+    gpio_set_level(23, 1);
 
     vTaskDelete(NULL);
 }
