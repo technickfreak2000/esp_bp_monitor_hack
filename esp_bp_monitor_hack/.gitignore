@@ -68,6 +68,7 @@ bootloader.bin
 *.tmp
 *.log
 *.lock
+*.cache
 
 # MacOS filesystem metadata (you can leave this if you sometimes cross-compile on mac)
 .DS_Store
