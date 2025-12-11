@@ -7,6 +7,7 @@
    CONDITIONS OF ANY KIND, either express or implied.
 */
 
+#include "ws_server.h"
 #include <esp_http_server.h>
 #include <esp_event.h>
 #include <esp_log.h>
@@ -19,8 +20,7 @@
 #include "sys/param.h"
 #include <esp_app_format.h>
 #include "spiffs.h"
-
-static esp_err_t trigger_async_send(httpd_handle_t handle, int fd, const char *msg);
+#include "gpio.h"
 
 static const char *TAG = "ws_server";
 
@@ -108,7 +108,7 @@ static void ws_async_send(void *arg)
     free(resp_arg);      // free struct
 }
 
-static esp_err_t trigger_async_send(httpd_handle_t handle, int fd, const char *msg)
+esp_err_t trigger_async_send(httpd_handle_t handle, int fd, const char *msg)
 {
     struct async_resp_arg *resp_arg = malloc(sizeof(struct async_resp_arg));
     if (!resp_arg)
@@ -122,7 +122,7 @@ static esp_err_t trigger_async_send(httpd_handle_t handle, int fd, const char *m
         free(resp_arg);
         return ESP_ERR_NO_MEM;
     }
-
+    ESP_LOGE(TAG, "trigger async - Server: %p, Client: %d", resp_arg->hd, resp_arg->fd);
     esp_err_t ret = httpd_queue_work(handle, ws_async_send, resp_arg);
     if (ret != ESP_OK)
     {
@@ -183,11 +183,57 @@ esp_err_t handle_ws_msg(char *msg_rec, httpd_handle_t *server, int ws_client)
     ESP_LOGE(TAG, "MSG: %s", msg_rec);
     if (strcmp(msg_rec, "start") == 0)
     {
+        httpd_user_t *httpd_user = malloc(sizeof(httpd_user_t)); // will be freed in task_take_measurement()
+        if (httpd_user == NULL)
+        {
+            ESP_LOGE(TAG, "Failed to allocate memory for httpd_user");
+            return ESP_ERR_NO_MEM;
+        }
+
+        httpd_user->server = server;
+        httpd_user->ws_client = ws_client;
+
         // Message is "start"
         ESP_LOGE(TAG, "HEYHEYHEY");
-        start_measurement();
+
+        // Start the measurement task
+        start_measurement(httpd_user);
         char *msg = "hehehehehehehe";
         return trigger_async_send(*server, ws_client, msg);
+    }
+    else if (strcmp(msg_rec, "on") == 0)
+    {
+        set_bpm_power(true);
+        char *msg = "on ok";
+        return trigger_async_send(*server, ws_client, msg);
+    }
+    else if (strcmp(msg_rec, "off") == 0)
+    {
+        set_bpm_power(false);
+        char *msg = "off ok";
+        return trigger_async_send(*server, ws_client, msg);
+    }else if (strncmp(msg_rec, "set ", 4) == 0)
+    {
+        int channel, value;
+        // Attempt to parse two integers from the string after "set "
+        if (sscanf(msg_rec + 4, "%d %d", &channel, &value) == 2)
+        {
+            ESP_LOGI(TAG, "Received set command: channel=%d, value=%d", channel, value);
+            // Assuming set_multiplexer function exists and is declared in gpio.h or similar
+            set_multiplexer(channel, value);
+
+            // Send a confirmation message back
+            char response_msg[64];
+            snprintf(response_msg, sizeof(response_msg), "set ok: channel %d set to %d", channel, value);
+            return trigger_async_send(*server, ws_client, response_msg);
+        }
+        else
+        {
+            // Failed to parse, send an error message
+            ESP_LOGE(TAG, "Invalid 'set' command format: %s", msg_rec);
+            char *error_msg = "set error: invalid format. Use: set <channel> <value>";
+            return trigger_async_send(*server, ws_client, error_msg);
+        }
     }
     return ESP_OK;
 }
@@ -423,17 +469,18 @@ static esp_err_t otaw2_update_handler(httpd_req_t *req)
     // Success
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req, "OK");
-    
+
     TimerHandle_t reboot_timer = xTimerCreate(
-        "reboot_timer",              // name (for debugging)
-        pdMS_TO_TICKS(10000),        // period in ticks (10 000 ms)
-        pdFALSE,                     // pdFALSE = one‐shot, pdTRUE = auto‐reload
-        NULL,                        // timer “ID” (not needed here)
-        reboot_timer_cb             // callback
+        "reboot_timer",       // name (for debugging)
+        pdMS_TO_TICKS(10000), // period in ticks (10 000 ms)
+        pdFALSE,              // pdFALSE = one‐shot, pdTRUE = auto‐reload
+        NULL,                 // timer “ID” (not needed here)
+        reboot_timer_cb       // callback
     );
     ESP_LOGE(TAG, "OTA complete");
 
-    if (xTimerStart(reboot_timer, /*ticks to wait*/ 100) != pdPASS) {
+    if (xTimerStart(reboot_timer, /*ticks to wait*/ 100) != pdPASS)
+    {
         ESP_LOGE(TAG, "Failed to start reboot timer");
     }
 
@@ -447,7 +494,7 @@ static esp_err_t ota_os(httpd_req_t *req)
     esp_err_t err = ESP_OK;
 
     /* update handle : set by esp_ota_begin(), must be freed via esp_ota_end() */
-    esp_ota_handle_t update_handle = 0 ;
+    esp_ota_handle_t update_handle = 0;
     const esp_partition_t *update_partition = NULL;
 
     ESP_LOGI(TAG, "Starting OTA OS");
@@ -455,17 +502,18 @@ static esp_err_t ota_os(httpd_req_t *req)
     const esp_partition_t *configured = esp_ota_get_boot_partition();
     const esp_partition_t *running = esp_ota_get_running_partition();
 
-    if (configured != running) {
-        ESP_LOGW(TAG, "Configured OTA boot partition at offset 0x%08"PRIx32", but running from offset 0x%08"PRIx32,
+    if (configured != running)
+    {
+        ESP_LOGW(TAG, "Configured OTA boot partition at offset 0x%08" PRIx32 ", but running from offset 0x%08" PRIx32,
                  configured->address, running->address);
         ESP_LOGW(TAG, "(This can happen if either the OTA boot data or preferred boot image become corrupted somehow.)");
     }
-    ESP_LOGI(TAG, "Running partition type %d subtype %d (offset 0x%08"PRIx32")",
+    ESP_LOGI(TAG, "Running partition type %d subtype %d (offset 0x%08" PRIx32 ")",
              running->type, running->subtype, running->address);
 
     update_partition = esp_ota_get_next_update_partition(NULL);
     assert(update_partition != NULL);
-    ESP_LOGI(TAG, "Writing to partition subtype %d at offset 0x%"PRIx32,
+    ESP_LOGI(TAG, "Writing to partition subtype %d at offset 0x%" PRIx32,
              update_partition->subtype, update_partition->address);
 
     int binary_file_length = 0;
@@ -478,17 +526,20 @@ static esp_err_t ota_os(httpd_req_t *req)
 
     /*deal with all receive packet*/
     bool image_header_was_checked = false;
-    while (remaining > 0) {
+    while (remaining > 0)
+    {
         int data_read = httpd_req_recv(req, buf, BUF_SIZE);
-        //ESP_LOGI(TAG, "Remaining: %d", remaining);
+        // ESP_LOGI(TAG, "Remaining: %d", remaining);
         uint8_t new_pct_received = (uint8_t)(((total_len - remaining) * 100) / total_len);
         if (pct_received != new_pct_received)
         {
             pct_received = new_pct_received;
             draw_ota("OS", pct_received, "downloading...");
         }
-        if (data_read <= 0) {
-            if (data_read == HTTPD_SOCK_ERR_TIMEOUT) {
+        if (data_read <= 0)
+        {
+            if (data_read == HTTPD_SOCK_ERR_TIMEOUT)
+            {
                 /* Retry if timeout occurred */
                 continue;
             }
@@ -497,28 +548,36 @@ static esp_err_t ota_os(httpd_req_t *req)
             /* Respond with 500 Internal Server Error */
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to receive ota");
             return ESP_FAIL;
-        } else {
-            if (image_header_was_checked == false) {
+        }
+        else
+        {
+            if (image_header_was_checked == false)
+            {
                 esp_app_desc_t new_app_info;
-                if (data_read > sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t)) {
+                if (data_read > sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t))
+                {
                     // check current version with downloading
                     memcpy(&new_app_info, &buf[sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t)], sizeof(esp_app_desc_t));
                     ESP_LOGI(TAG, "New firmware version: %s", new_app_info.version);
 
                     esp_app_desc_t running_app_info;
-                    if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK) {
+                    if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK)
+                    {
                         ESP_LOGI(TAG, "Running firmware version: %s", running_app_info.version);
                     }
 
-                    const esp_partition_t* last_invalid_app = esp_ota_get_last_invalid_partition();
+                    const esp_partition_t *last_invalid_app = esp_ota_get_last_invalid_partition();
                     esp_app_desc_t invalid_app_info;
-                    if (esp_ota_get_partition_description(last_invalid_app, &invalid_app_info) == ESP_OK) {
+                    if (esp_ota_get_partition_description(last_invalid_app, &invalid_app_info) == ESP_OK)
+                    {
                         ESP_LOGI(TAG, "Last invalid firmware version: %s", invalid_app_info.version);
                     }
 
                     // check current version with last invalid partition
-                    if (last_invalid_app != NULL) {
-                        if (memcmp(invalid_app_info.version, new_app_info.version, sizeof(new_app_info.version)) == 0) {
+                    if (last_invalid_app != NULL)
+                    {
+                        if (memcmp(invalid_app_info.version, new_app_info.version, sizeof(new_app_info.version)) == 0)
+                        {
                             ESP_LOGW(TAG, "New version is the same as invalid version.");
                             ESP_LOGW(TAG, "Previously, there was an attempt to launch the firmware with %s version, but it failed.", invalid_app_info.version);
                             ESP_LOGW(TAG, "The firmware has been rolled back to the previous version.");
@@ -529,20 +588,24 @@ static esp_err_t ota_os(httpd_req_t *req)
                     image_header_was_checked = true;
 
                     err = esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle);
-                    if (err != ESP_OK) {
+                    if (err != ESP_OK)
+                    {
                         ESP_LOGE(TAG, "esp_ota_begin failed (%s)", esp_err_to_name(err));
                         esp_ota_abort(update_handle);
                         return ESP_FAIL;
                     }
                     ESP_LOGI(TAG, "esp_ota_begin succeeded");
-                } else {
+                }
+                else
+                {
                     ESP_LOGE(TAG, "received package is not fit len");
                     esp_ota_abort(update_handle);
                     return ESP_FAIL;
                 }
             }
-            err = esp_ota_write( update_handle, (const void *)buf, data_read);
-            if (err != ESP_OK) {
+            err = esp_ota_write(update_handle, (const void *)buf, data_read);
+            if (err != ESP_OK)
+            {
                 esp_ota_abort(update_handle);
                 return ESP_FAIL;
             }
@@ -555,17 +618,22 @@ static esp_err_t ota_os(httpd_req_t *req)
     ESP_LOGI(TAG, "Total Write binary data length: %d", binary_file_length);
 
     err = esp_ota_end(update_handle);
-    if (err != ESP_OK) {
-        if (err == ESP_ERR_OTA_VALIDATE_FAILED) {
+    if (err != ESP_OK)
+    {
+        if (err == ESP_ERR_OTA_VALIDATE_FAILED)
+        {
             ESP_LOGE(TAG, "Image validation failed, image is corrupted");
-        } else {
+        }
+        else
+        {
             ESP_LOGE(TAG, "esp_ota_end failed (%s)!", esp_err_to_name(err));
         }
         return err;
     }
 
     err = esp_ota_set_boot_partition(update_partition);
-    if (err != ESP_OK) {
+    if (err != ESP_OK)
+    {
         ESP_LOGE(TAG, "esp_ota_set_boot_partition failed (%s)!", esp_err_to_name(err));
         return err;
     }
@@ -573,16 +641,17 @@ static esp_err_t ota_os(httpd_req_t *req)
     return ESP_OK;
 }
 
-static esp_err_t ota_spiffs(httpd_req_t *req){
+static esp_err_t ota_spiffs(httpd_req_t *req)
+{
     size_t total_len = req->content_len;
     uint8_t pct_received = 0;
     esp_err_t err = ESP_OK;
     size_t dst_offset = 0;
     const esp_partition_t *update_part = NULL;
     update_part = esp_partition_find_first(
-    ESP_PARTITION_TYPE_DATA,
-    ESP_PARTITION_SUBTYPE_DATA_SPIFFS,
-    "storage");
+        ESP_PARTITION_TYPE_DATA,
+        ESP_PARTITION_SUBTYPE_DATA_SPIFFS,
+        "storage");
     if (update_part == NULL)
     {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
@@ -609,17 +678,20 @@ static esp_err_t ota_spiffs(httpd_req_t *req){
 
     /*deal with all receive packet*/
     bool image_header_was_checked = false;
-    while (remaining > 0) {
+    while (remaining > 0)
+    {
         int data_read = httpd_req_recv(req, buf, BUF_SIZE);
-        //ESP_LOGI(TAG, "Remaining: %d", remaining);
+        // ESP_LOGI(TAG, "Remaining: %d", remaining);
         uint8_t new_pct_received = (uint8_t)(((total_len - remaining) * 100) / total_len);
         if (pct_received != new_pct_received)
         {
             pct_received = new_pct_received;
             draw_ota("SPIFFS", pct_received, "downloading...");
         }
-        if (data_read <= 0) {
-            if (data_read == HTTPD_SOCK_ERR_TIMEOUT) {
+        if (data_read <= 0)
+        {
+            if (data_read == HTTPD_SOCK_ERR_TIMEOUT)
+            {
                 /* Retry if timeout occurred */
                 continue;
             }
@@ -628,23 +700,30 @@ static esp_err_t ota_spiffs(httpd_req_t *req){
             /* Respond with 500 Internal Server Error */
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to receive ota");
             return ESP_FAIL;
-        } else {
-            if (image_header_was_checked == false) {
+        }
+        else
+        {
+            if (image_header_was_checked == false)
+            {
                 esp_app_desc_t new_app_info;
-                if (data_read > sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t)) {
+                if (data_read > sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t))
+                {
                     // check current version with downloading
                     memcpy(&new_app_info, &buf[sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t)], sizeof(esp_app_desc_t));
                     ESP_LOGI(TAG, "New firmware version: %s", new_app_info.version);
 
-                    const esp_partition_t* last_invalid_app = esp_ota_get_last_invalid_partition();
+                    const esp_partition_t *last_invalid_app = esp_ota_get_last_invalid_partition();
                     esp_app_desc_t invalid_app_info;
-                    if (esp_ota_get_partition_description(last_invalid_app, &invalid_app_info) == ESP_OK) {
+                    if (esp_ota_get_partition_description(last_invalid_app, &invalid_app_info) == ESP_OK)
+                    {
                         ESP_LOGI(TAG, "Last invalid firmware version: %s", invalid_app_info.version);
                     }
 
                     // check current version with last invalid partition
-                    if (last_invalid_app != NULL) {
-                        if (memcmp(invalid_app_info.version, new_app_info.version, sizeof(new_app_info.version)) == 0) {
+                    if (last_invalid_app != NULL)
+                    {
+                        if (memcmp(invalid_app_info.version, new_app_info.version, sizeof(new_app_info.version)) == 0)
+                        {
                             ESP_LOGW(TAG, "New version is the same as invalid version.");
                             ESP_LOGW(TAG, "Previously, there was an attempt to launch the firmware with %s version, but it failed.", invalid_app_info.version);
                             ESP_LOGW(TAG, "The firmware has been rolled back to the previous version.");
@@ -653,15 +732,17 @@ static esp_err_t ota_spiffs(httpd_req_t *req){
                     }
 
                     image_header_was_checked = true;
-
-                } else {
+                }
+                else
+                {
                     ESP_LOGE(TAG, "received package is not fit len");
                     return ESP_FAIL;
                 }
             }
             err = esp_partition_write(update_part, dst_offset, (const void *)buf, data_read);
             dst_offset += data_read;
-            if (err != ESP_OK) {
+            if (err != ESP_OK)
+            {
                 return ESP_FAIL;
             }
             binary_file_length += data_read;
@@ -682,8 +763,9 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
     size_t query_len = httpd_req_get_url_query_len(req);
     ESP_LOGE(TAG, "URL query length: %d", query_len);
     char *buf_url_q = malloc((query_len + 1) * sizeof(char));
-    esp_err_t err = httpd_req_get_url_query_str(req, buf_url_q, query_len+1);
-    if(err != ESP_OK) {
+    esp_err_t err = httpd_req_get_url_query_str(req, buf_url_q, query_len + 1);
+    if (err != ESP_OK)
+    {
         ESP_LOGE(TAG, "Failed to get URL query string");
         ESP_LOGE(TAG, "Error: %s", esp_err_to_name(err));
         free(buf_url_q);
@@ -698,7 +780,7 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
     bool is_fw = (strcmp(part_name, "firmware") == 0);
 
     draw_ota(is_fw ? "OS" : "SPIFFS", 0, "ready");
-    
+
     if (is_fw)
     {
         err = ota_os(req);
@@ -715,29 +797,30 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
         free(buf_url_q);
         return err;
     }
-    
+
     ESP_LOGI(TAG, "Prepare to restart system!");
-   
+
     TimerHandle_t reboot_timer = xTimerCreate(
-        "reboot_timer",              // name (for debugging)
-        pdMS_TO_TICKS(2000),        // period in ticks (10 000 ms)
-        pdFALSE,                     // pdFALSE = one‐shot, pdTRUE = auto‐reload
-        NULL,                        // timer “ID” (not needed here)
-        reboot_timer_cb             // callback
+        "reboot_timer",      // name (for debugging)
+        pdMS_TO_TICKS(2000), // period in ticks (10 000 ms)
+        pdFALSE,             // pdFALSE = one‐shot, pdTRUE = auto‐reload
+        NULL,                // timer “ID” (not needed here)
+        reboot_timer_cb      // callback
     );
     ESP_LOGE(TAG, "OTA complete");
 
-    if (xTimerStart(reboot_timer, /*ticks to wait*/ 100) != pdPASS) {
+    if (xTimerStart(reboot_timer, /*ticks to wait*/ 100) != pdPASS)
+    {
         ESP_LOGE(TAG, "Failed to start reboot timer");
     }
-    
+
     draw_ota(is_fw ? "OS" : "SPIFFS", 100, "Rebooting now ...");
-    
+
     // Success
     httpd_resp_set_status(req, "200");
-    httpd_resp_set_type(req, "text/plain");                // optional
-    httpd_resp_set_hdr(req, "Content-Length", "0");        // explicit zero-length
-    httpd_resp_set_hdr(req, "Connection", "close");        // signal connection close
+    httpd_resp_set_type(req, "text/plain");         // optional
+    httpd_resp_set_hdr(req, "Content-Length", "0"); // explicit zero-length
+    httpd_resp_set_hdr(req, "Connection", "close"); // signal connection close
     // send an empty string (zero bytes) – curl sees Content-Length=0 and closes
     httpd_resp_send(req, "", HTTPD_RESP_USE_STRLEN);
 
@@ -746,10 +829,10 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
 
 static void reboot_timer_cb(TimerHandle_t xTimer)
 {
-    
+
     ESP_LOGE(TAG, "Restarting...");
     vTaskDelay(pdMS_TO_TICKS(1000));
-    esp_restart(); 
+    esp_restart();
 }
 
 static const httpd_uri_t index_site = {
@@ -776,7 +859,7 @@ httpd_handle_t start_webserver(void)
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 
-    //config.stack_size = 8192;
+    // config.stack_size = 8192;
 
     // Start the httpd server
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
@@ -790,6 +873,7 @@ httpd_handle_t start_webserver(void)
 
         ESP_LOGI(TAG, "Creating tasks");
         // xTaskCreate(ws_help_broadcast_task, "ws_help_broadcast_task", 4096, server, 5, NULL);
+        ESP_LOGE(TAG, "HTTPD - Server: %p", server);
         return server;
     }
 

@@ -18,9 +18,9 @@
 #include "driver/gpio.h"
 #include "driver/i2c.h"
 #include "display.h"
+#include "gpio.h"
 
-#define GPIO_OUTPUT_IO_0 23
-#define GPIO_OUTPUT_PIN_SEL ((1ULL << GPIO_OUTPUT_IO_0))
+static const char *TAG = "main";
 
 void app_main(void)
 {
@@ -41,22 +41,7 @@ void app_main(void)
         ESP_LOGE("ota_info", "esp_ota_get_running_partition() returned NULL!");
     }
 
-    // zero-initialize the config structure.
-    gpio_config_t io_conf = {};
-    // disable interrupt
-    io_conf.intr_type = GPIO_INTR_DISABLE;
-    // set as output mode
-    io_conf.mode = GPIO_MODE_OUTPUT;
-    // bit mask of the pins that you want to set,e.g.GPIO18/19
-    io_conf.pin_bit_mask = GPIO_OUTPUT_PIN_SEL;
-    // disable pull-down mode
-    io_conf.pull_down_en = 0;
-    // disable pull-up mode
-    io_conf.pull_up_en = 0;
-    // configure GPIO with the given settings
-    gpio_config(&io_conf);
-
-    gpio_set_level(GPIO_OUTPUT_IO_0, 1);
+    init_gpio();
 
     u8g2_init_display();
 
